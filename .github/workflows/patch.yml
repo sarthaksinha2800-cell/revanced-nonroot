@@ -1,32 +1,71 @@
+name: Auto Patch and Release ReVanced
+
 on:
   workflow_dispatch:
   schedule:
-    # Runs daily at 00:00 UTC
-    - cron: '0 0 * * *'
+    - cron: '0 */6 * * *'  # Every 6 hours
   push:
     branches: [ main ]
     paths:
-      - 'patches.json'
-      - 'versions.json'
-      - 'config.json'
+      - 'patch-config.json'
+      - '.github/workflows/patch.yml'
 
 jobs:
+  check-updates:
+    name: Check for Updates
+    runs-on: ubuntu-latest
+    outputs:
+      has_updates: ${{ steps.check.outputs.has_updates }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Python Dependencies
+        run: |
+          pip install requests beautifulsoup4 lxml
+      
+      - name: Check for App Updates
+        id: check
+        run: |
+          cd scripts
+          python check_updates.py
+          if git status --porcelain | grep patch-config.json; then
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "Updates found, committing changes..."
+            git config --global user.name "GitHub Actions"
+            git config --global user.email "actions@github.com"
+            git add ../patch-config.json
+            git commit -m "chore: update app versions [skip ci]"
+            git push
+          else
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+          fi
+
   patch-apps:
     name: Read Matrix Configuration 
+    needs: check-updates
+    if: needs.check-updates.outputs.has_updates == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-
     outputs:
       matrix: ${{ steps.read-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Read Matrix Config
         id: read-matrix
-        uses: actions/github-script@main
+        uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
@@ -37,30 +76,29 @@ jobs:
   matrix-patch:
     name: Patch Applications
     needs: patch-apps
-    permissions: write-all
+    permissions: 
+      contents: write
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      ENDPOINT_URL: ${{ secrets.ENDPOINT_URL }}
-      BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
+    
     strategy:
       matrix:
         include: ${{ fromJson(needs.patch-apps.outputs.matrix) }}
+    
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@main
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Install Python
-        uses: actions/setup-python@main
+        uses: actions/setup-python@v4
         with:
           python-version: 3.11
 
       - name: Cache Python packages
-        uses: actions/cache@main
+        uses: actions/cache@v3
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
@@ -75,46 +113,146 @@ jobs:
           APP_NAME: ${{ matrix.app_name }}
           SOURCE: ${{ matrix.source }}
         run: python -m src
+      
+      - name: Rename APK with version
+        run: |
+          # Find and rename the APK file
+          for apk in *.apk; do
+            if [ -f "$apk" ]; then
+              version=$(echo "${{ matrix.source }}" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+              new_name="revanced-${{ matrix.app_name }}-v${version:-latest}.apk"
+              mv "$apk" "$new_name"
+              echo "Renamed to: $new_name"
+            fi
+          done
+      
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: revanced-apks
+          path: "*.apk"
+          retention-days: 1
+
+  create-release:
+    name: Create/Update Release
+    needs: matrix-patch
+    if: success()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Download All APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: revanced-apks
+          path: ./apks
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install Release Dependencies
+        run: pip install PyGithub
+      
+      - name: Update Release Info
+        run: python scripts/manage_release.py
+      
+      - name: Create or Update Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Generate release body
+          release_body=$(python -c "
+          import json
+          from datetime import datetime
+          
+          with open('patch-config.json', 'r') as f:
+              config = json.load(f)
+          
+          body = '# ReVanced Patched APKs\\n\\n'
+          body += '## Available Apps\\n\\n'
+          
+          for app in config.get('patch_list', []):
+              app_name = app.get('app_name', 'Unknown').replace('_', ' ').title()
+              body += f'- {app_name}\\n'
+          
+          body += f'\\n**Last Built:** {datetime.now().strftime(\"%Y-%m-%d %H:%M UTC\")}\\n'
+          body += '\\n---\\n'
+          body += '\\nThese APKs are automatically built every 6 hours.'
+          print(body)
+          ")
+          
+          # Create tag name with date
+          tag_name="revanced-$(date +%Y%m%d-%H%M)"
+          
+          # Create or update release
+          gh release create "$tag_name" \
+            --title "ReVanced APKs - $(date +%Y-%m-%d)" \
+            --notes "$release_body" \
+            ./apks/*.apk \
+            --latest \
+            --repo "$GITHUB_REPOSITORY"
+          
+          echo "Release created/updated: $tag_name"
+      
+      - name: Clean Old Releases (keep last 5)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Keep only the latest 5 releases
+          releases=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,isPrerelease)
+          
+          # Filter out drafts and prereleases, get only auto-generated revanced releases
+          old_releases=$(echo "$releases" | jq -r '.[] | select(.tagName | startswith("revanced-")) | .tagName' | sort -r | tail -n +6)
+          
+          for release in $old_releases; do
+            echo "Deleting old release: $release"
+            gh release delete "$release" --yes --repo "$GITHUB_REPOSITORY" || true
+          done
 
   cleanup:
     name: Cleanup Workflow Runs
     needs: matrix-patch
     runs-on: ubuntu-latest
-    if: ${{ success() }}
+    if: ${{ always() }}
     permissions:
       actions: write
     steps:
     - name: Cleanup Previous Workflow Runs
-      uses: actions/github-script@main
+      uses: actions/github-script@v7
       with:
         script: |
-          const allRuns = [];
-          let page = 1;
+          const { data: runs } = await github.rest.actions.listWorkflowRuns({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            workflow_id: 'patch.yml',
+            per_page: 100,
+            status: 'completed'
+          });
 
-          while (true) {
-            const { data: runs } = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'patch.yml',
-              per_page: 100,
-              page,
-            });
+          console.log(`Found ${runs.total_count} workflow runs.`);
 
-            if (runs.workflow_runs.length === 0) break;
-            allRuns.push(...runs.workflow_runs);
-            page++;
-          }
+          // Keep last 5 runs, delete older ones
+          const runsToDelete = runs.workflow_runs
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .slice(5);
 
-          console.log(`Found ${allRuns.length} workflow runs.`);
-
-          for (const run of allRuns) {
-            if (run.id !== context.runId) {
-              console.log(`Deleting workflow run ID: ${run.id}`);
+          for (const run of runsToDelete) {
+            console.log(`Deleting workflow run ID: ${run.id} (${run.created_at})`);
+            try {
               await github.rest.actions.deleteWorkflowRun({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: run.id,
               });
+            } catch (error) {
+              console.log(`Failed to delete run ${run.id}: ${error.message}`);
             }
           }
       env:
