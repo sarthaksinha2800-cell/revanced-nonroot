@@ -6,6 +6,13 @@ import subprocess
 import re
 from datetime import datetime
 
+# Always trigger build - we'll rely on schedule and manual triggers
+print("Triggering build...")
+
+# Set GitHub Actions output
+with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+    f.write('has_updates=true\n')
+
 def get_apkmirror_version(package_name):
     """
     Get latest version from APKMirror using curl (no Python dependencies)
