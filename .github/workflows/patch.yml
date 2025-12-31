@@ -122,11 +122,19 @@ jobs:
       
       - name: Find and Rename APK Files
         run: |
-          # Find APK files and rename them with source and timestamp
+          # Find APK files and rename them with better names
           for apk_file in *.apk; do
             if [ -f "$apk_file" ]; then
-              timestamp=$(date +%Y%m%d-%H%M)
-              new_name="revanced-${{ matrix.app_name }}-${{ matrix.source }}-${timestamp}.apk"
+              # Extract info from filename if needed
+              if [[ "$apk_file" == *"youtube-music-patch"* ]]; then
+                new_name="revanced-youtube-music-${{ matrix.source }}.apk"
+              elif [[ "$apk_file" == *"patch"* ]]; then
+                # Generic renaming for other APKs
+                app_part=$(echo "$apk_file" | cut -d'-' -f1)
+                new_name="revanced-${app_part}-${{ matrix.source }}.apk"
+              else
+                new_name="$apk_file"
+              fi
               mv "$apk_file" "$new_name"
               echo "Renamed: $apk_file -> $new_name"
             fi
