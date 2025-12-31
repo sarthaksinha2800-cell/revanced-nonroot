@@ -84,14 +84,30 @@ def run_build(app_name: str, source: str) -> str:
     if not apksigner:
         exit(1)
 
-    utils.run_process([
-        str(apksigner), "sign", "--verbose",
-        "--ks", "keystore/public.jks",
-        "--ks-pass", "pass:public",
-        "--key-pass", "pass:public",
-        "--ks-key-alias", "public",
-        "--in", str(output_apk), "--out", str(signed_apk)
-    ], stream=True)
+    # Try to sign, if fails, try alternative method
+    try:
+        utils.run_process([
+            str(apksigner), "sign", "--verbose",
+            "--ks", "keystore/public.jks",
+            "--ks-pass", "pass:public",
+            "--key-pass", "pass:public",
+            "--ks-key-alias", "public",
+            "--in", str(output_apk), "--out", str(signed_apk)
+        ], stream=True)
+    except Exception as e:
+        logging.warning(f"Standard signing failed: {e}")
+        logging.info("Trying alternative signing method...")
+        
+        # Try with min-sdk-version flag
+        utils.run_process([
+            str(apksigner), "sign", "--verbose",
+            "--min-sdk-version", "21",  # Add this flag
+            "--ks", "keystore/public.jks",
+            "--ks-pass", "pass:public",
+            "--key-pass", "pass:public",
+            "--ks-key-alias", "public",
+            "--in", str(output_apk), "--out", str(signed_apk)
+        ], stream=True)
 
     output_apk.unlink(missing_ok=True)
     # release.create_github_release(name, revanced_patches, revanced_cli, signed_apk)
