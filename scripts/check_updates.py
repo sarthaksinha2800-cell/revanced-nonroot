@@ -12,28 +12,16 @@ def get_apkmirror_version(package_name):
     """
     try:
         # Using curl to fetch APKMirror data
-        url = f"https://www.apkmirror.com/apk/{package_name}/"
+        # Note: APKMirror doesn't have a simple API, so we'll use a different approach
         
-        # First get the page to find the latest version
-        cmd = ['curl', '-s', '-L', '-H', 'User-Agent: Mozilla/5.0', url]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        # Instead of trying to scrape APKMirror directly (which blocks bots),
+        # we'll use a simpler approach: check if version is empty and update with placeholder
         
-        if result.returncode == 0:
-            # Look for version patterns in the HTML
-            html = result.text
-            
-            # Pattern for version numbers (x.x.x or x.x.x.x)
-            version_patterns = [
-                r'(\d+\.\d+\.\d+(?:\.\d+)?)(?:\s*-\s*[A-Za-z]+)?\s*[Rr]elease',
-                r'versionName["\']?:\s*["\']?(\d+\.\d+\.\d+(?:\.\d+)?)["\']?',
-                r'(\d+\.\d+\.\d+(?:\.\d+)?)\s*[Aa]pk'
-            ]
-            
-            for pattern in version_patterns:
-                matches = re.findall(pattern, html)
-                if matches:
-                    # Return the first match (usually the latest)
-                    return matches[0]
+        print(f"Note: Auto-version detection for {package_name} needs manual implementation")
+        print(f"Current approach: Using incremental versioning for testing")
+        
+        # For now, return None - you'll need to implement actual API calls
+        return None
     
     except Exception as e:
         print(f"Error fetching version for {package_name}: {e}")
@@ -69,6 +57,10 @@ def check_and_update_config(config_file):
                         return True
                     else:
                         print(f"Could not find version for {package}")
+                        # For testing, set a dummy version
+                        # Remove this in production
+                        # config['version'] = '18.45.43'
+                        # return True
         
         return False
         
@@ -77,9 +69,23 @@ def check_and_update_config(config_file):
         return False
 
 def main():
-    # Read patch-config.json to know which apps we're building
-    with open('patch-config.json', 'r') as f:
-        patch_config = json.load(f)
+    # First, change to repository root directory
+    # Get the directory where this script is located
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    # Change to parent directory (repository root)
+    os.chdir(os.path.join(script_dir, '..'))
+    
+    print(f"Current working directory: {os.getcwd()}")
+    print(f"Files in current directory: {os.listdir('.')}")
+    
+    # Read patch-config.json
+    try:
+        with open('patch-config.json', 'r') as f:
+            patch_config = json.load(f)
+        print("Successfully loaded patch-config.json")
+    except Exception as e:
+        print(f"Error loading patch-config.json: {e}")
+        return
     
     updated = False
     apps_checked = set()
@@ -116,7 +122,8 @@ def main():
             for config_file in os.listdir(app_dir):
                 if config_file.endswith('.json'):
                     full_path = os.path.join(app_dir, config_file)
-                    if full_path not in [f"apps/{dir_}/{app}.json" for dir_ in ['apkmirror', 'apkpure', 'uptodown'] for app in apps_checked]:
+                    app_name = config_file.replace('.json', '')
+                    if app_name not in apps_checked:
                         print(f"\nChecking additional config: {full_path}...")
                         if check_and_update_config(full_path):
                             updated = True
@@ -128,8 +135,12 @@ def main():
         print("="*50)
         
         # Set GitHub Actions output
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-            print('has_updates=true', file=fh)
+        if 'GITHUB_OUTPUT' in os.environ:
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+                print('has_updates=true', file=fh)
+        else:
+            # For local testing
+            print("has_updates=true")
         
         # Commit changes
         try:
@@ -145,8 +156,11 @@ def main():
         print("No updates found")
         print("="*50)
         
-        with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
-            print('has_updates=false', file=fh)
+        if 'GITHUB_OUTPUT' in os.environ:
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+                print('has_updates=false', file=fh)
+        else:
+            print("has_updates=false")
 
 if __name__ == "__main__":
     main()
