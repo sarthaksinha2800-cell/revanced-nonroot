@@ -3,6 +3,7 @@ import logging
 from sys import exit
 from pathlib import Path
 from os import getenv
+import subprocess
 from src import (
     r2,
     utils,
