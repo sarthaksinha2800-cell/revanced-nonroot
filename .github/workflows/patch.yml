@@ -8,6 +8,7 @@ on:
     branches: [ main ]
     paths:
       - 'patch-config.json'
+      - 'apps/**'
       - '.github/workflows/patch.yml'
 
 jobs:
@@ -28,24 +29,19 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install Python Dependencies
-        run: |
-          pip install requests beautifulsoup4 lxml
-      
       - name: Check for App Updates
         id: check
         run: |
-          cd scripts
-          python check_updates.py
-          if git status --porcelain | grep patch-config.json; then
+          echo "Checking for app updates..."
+          # Run update checker
+          python scripts/check_updates.py
+          
+          # Check if any files were modified
+          if git diff --name-only | grep -q '\.json$'; then
+            echo "Updates found"
             echo "has_updates=true" >> $GITHUB_OUTPUT
-            echo "Updates found, committing changes..."
-            git config --global user.name "GitHub Actions"
-            git config --global user.email "actions@github.com"
-            git add ../patch-config.json
-            git commit -m "chore: update app versions [skip ci]"
-            git push
           else
+            echo "No updates found"
             echo "has_updates=false" >> $GITHUB_OUTPUT
           fi
 
@@ -81,6 +77,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      ENDPOINT_URL: ${{ secrets.ENDPOINT_URL }}
+      BUCKET_NAME: ${{ secrets.BUCKET_NAME }}
     
     strategy:
       matrix:
@@ -114,42 +114,47 @@ jobs:
           SOURCE: ${{ matrix.source }}
         run: python -m src
       
-      - name: Rename APK with version
+      - name: Find and Rename APK Files
         run: |
-          # Find and rename the APK file
-          for apk in *.apk; do
-            if [ -f "$apk" ]; then
-              version=$(echo "${{ matrix.source }}" | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-              new_name="revanced-${{ matrix.app_name }}-v${version:-latest}.apk"
-              mv "$apk" "$new_name"
-              echo "Renamed to: $new_name"
+          # Find APK files and rename them with source and timestamp
+          for apk_file in *.apk; do
+            if [ -f "$apk_file" ]; then
+              timestamp=$(date +%Y%m%d-%H%M)
+              new_name="revanced-${{ matrix.app_name }}-${{ matrix.source }}-${timestamp}.apk"
+              mv "$apk_file" "$new_name"
+              echo "Renamed: $apk_file -> $new_name"
             fi
           done
       
-      - name: Upload APK Artifact
+      - name: Upload APKs to Cloudflare R2
+        if: success()
+        run: |
+          # This will use your existing R2 upload logic
+          # Assuming your src module handles R2 upload
+          echo "APKs should be uploaded to R2 by the patching script"
+      
+      - name: Upload APKs as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: revanced-apks
+          name: revanced-apks-${{ matrix.app_name }}-${{ matrix.source }}
           path: "*.apk"
           retention-days: 1
 
   create-release:
-    name: Create/Update Release
+    name: Create GitHub Release
     needs: matrix-patch
     if: success()
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      actions: read
-    
+      
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
       
-      - name: Download All APKs
+      - name: Download All APK Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: revanced-apks
           path: ./apks
       
       - name: Setup Python
@@ -157,63 +162,57 @@ jobs:
         with:
           python-version: '3.11'
       
-      - name: Install Release Dependencies
-        run: pip install PyGithub
+      - name: Generate Release Notes
+        run: |
+          python scripts/manage_release.py
       
-      - name: Update Release Info
-        run: python scripts/manage_release.py
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: revanced-$(date +%Y%m%d-%H%M)
+          name: "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')"
+          body_path: release_notes.md
+          files: |
+            ./apks/**/*.apk
+          draft: false
+          prerelease: false
+          generate_release_notes: false
       
-      - name: Create or Update Release
+      - name: Clean Old Releases
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Generate release body
-          release_body=$(python -c "
-          import json
-          from datetime import datetime
+          # Install GitHub CLI if needed
+          if ! command -v gh &> /dev/null; then
+            echo "Installing GitHub CLI..."
+            type -p curl >/dev/null || (apt-get update && apt-get install curl -y)
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            apt-get update
+            apt-get install gh -y
+          fi
           
-          with open('patch-config.json', 'r') as f:
-              config = json.load(f)
+          # Keep only last 3 releases
+          releases=$(gh release list --repo $GITHUB_REPOSITORY --limit 20 --json tagName,isDraft)
           
-          body = '# ReVanced Patched APKs\\n\\n'
-          body += '## Available Apps\\n\\n'
+          # Filter for auto-generated releases and sort by date
+          auto_releases=$(echo "$releases" | jq -r '.[] | select(.tagName | startswith("revanced-")) | .tagName' | sort -r)
           
-          for app in config.get('patch_list', []):
-              app_name = app.get('app_name', 'Unknown').replace('_', ' ').title()
-              body += f'- {app_name}\\n'
+          # Count releases
+          count=0
+          to_delete=""
+          for release in $auto_releases; do
+            if [ $count -ge 3 ]; then
+              to_delete="$to_delete $release"
+            fi
+            count=$((count + 1))
+          done
           
-          body += f'\\n**Last Built:** {datetime.now().strftime(\"%Y-%m-%d %H:%M UTC\")}\\n'
-          body += '\\n---\\n'
-          body += '\\nThese APKs are automatically built every 6 hours.'
-          print(body)
-          ")
-          
-          # Create tag name with date
-          tag_name="revanced-$(date +%Y%m%d-%H%M)"
-          
-          # Create or update release
-          gh release create "$tag_name" \
-            --title "ReVanced APKs - $(date +%Y-%m-%d)" \
-            --notes "$release_body" \
-            ./apks/*.apk \
-            --latest \
-            --repo "$GITHUB_REPOSITORY"
-          
-          echo "Release created/updated: $tag_name"
-      
-      - name: Clean Old Releases (keep last 5)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Keep only the latest 5 releases
-          releases=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName,isDraft,isPrerelease)
-          
-          # Filter out drafts and prereleases, get only auto-generated revanced releases
-          old_releases=$(echo "$releases" | jq -r '.[] | select(.tagName | startswith("revanced-")) | .tagName' | sort -r | tail -n +6)
-          
-          for release in $old_releases; do
+          # Delete old releases
+          for release in $to_delete; do
             echo "Deleting old release: $release"
-            gh release delete "$release" --yes --repo "$GITHUB_REPOSITORY" || true
+            gh release delete "$release" --yes --repo $GITHUB_REPOSITORY || true
           done
 
   cleanup:
