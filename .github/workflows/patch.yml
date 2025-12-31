@@ -29,14 +29,20 @@ jobs:
         with:
           python-version: '3.11'
       
+      - name: Install Python Dependencies
+        run: |
+          pip install requests
+      
       - name: Check for App Updates
         id: check
         run: |
           echo "Checking for app updates..."
           # Run update checker
-          python scripts/check_updates.py
+          cd scripts
+          python check_updates.py
           
           # Check if any files were modified
+          cd ..
           if git diff --name-only | grep -q '\.json$'; then
             echo "Updates found"
             echo "has_updates=true" >> $GITHUB_OUTPUT
