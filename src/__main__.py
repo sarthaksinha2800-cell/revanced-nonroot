@@ -67,6 +67,23 @@ def run_build(app_name: str, source: str) -> str:
         "zip", "--delete", str(input_apk), "lib/x86/*", "lib/x86_64/*"
     ], silent=True, check=False)
 
+    # FIX: Repair corrupted APK from Uptodown
+    logging.info("Checking APK for corruption...")
+    try:
+        # Try to fix the APK if it's corrupted
+        fixed_apk = Path(f"{app_name}-fixed-v{version}.apk")
+        subprocess.run([
+            "zip", "-FF", str(input_apk), "--out", str(fixed_apk)
+        ], check=False, capture_output=True)
+        
+        if fixed_apk.exists() and fixed_apk.stat().st_size > 0:
+            # Replace corrupted APK with fixed one
+            input_apk.unlink(missing_ok=True)
+            fixed_apk.rename(input_apk)
+            logging.info("APK fixed successfully")
+    except Exception as e:
+        logging.warning(f"Could not fix APK: {e}")
+
     output_apk = Path(f"{app_name}-patch-v{version}.apk")
 
     utils.run_process([
