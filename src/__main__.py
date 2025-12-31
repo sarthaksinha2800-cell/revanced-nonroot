@@ -95,7 +95,11 @@ def run_build(app_name: str, source: str) -> str:
 
     output_apk.unlink(missing_ok=True)
     # release.create_github_release(name, revanced_patches, revanced_cli, signed_apk)
-    r2.upload(str(signed_apk), f"{app_name}/{signed_apk.name}")
+    #r2.upload(str(signed_apk), f"{app_name}/{signed_apk.name}")
+    print(f"✅ APK built: {signed_apk.name}")
+    
+    # Keep the file as-is (it already has version in the name)
+    return str(signed_apk)
 
 if __name__ == "__main__":
     app_name = getenv("APP_NAME")
@@ -105,20 +109,5 @@ if __name__ == "__main__":
         logging.error("APP_NAME and SOURCE environment variables must be set")
         exit(1)
 
-    run_build(app_name, source)
-
-if signed_apk:
-        # Don't create releases here - let GitHub Actions handle it
-        # release.create_github_release(name, revanced_patches, revanced_cli, signed_apk)
-        
-        # Don't upload to R2 unless you have credentials
-        # r2.upload(str(signed_apk), f"{app_name}/{signed_apk.name}")
-        
-        # Just keep the APK file - GitHub Actions will upload it as artifact
-        print(f"APK ready for GitHub Actions: {signed_apk.name}")
-        
-        # Rename the APK file to include source and timestamp
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M")
-        new_name = f"revanced-{app_name}-{name}-{timestamp}.apk"
-        os.rename(str(signed_apk), new_name)
-        print(f"Renamed to: {new_name}")
+    apk_path = run_build(app_name, source)
+    print(f"🎯 Final APK path: {apk_path}")
