@@ -1,0 +1,9 @@
+{
+    "org": "solid-explorer",
+    "name": "solid-explorer-2",
+    "type": "APK",
+    "arch": "universal",
+    "dpi": "nodpi",
+    "package": "pl.solidexplorer2",
+    "version": ""
+}
