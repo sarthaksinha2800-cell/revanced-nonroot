@@ -37,12 +37,12 @@ jobs:
         id: check
         run: |
           echo "Checking for app updates..."
-          # Run update checker
-          cd scripts
-          python check_updates.py
+          # Install requests module
+          pip install requests
+          # Run update checker from repository root
+          python scripts/check_updates.py
           
           # Check if any files were modified
-          cd ..
           if git diff --name-only | grep -q '\.json$'; then
             echo "Updates found"
             echo "has_updates=true" >> $GITHUB_OUTPUT
