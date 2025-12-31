@@ -1,0 +1,20 @@
+[
+    {
+        "name": "scrazzz-revanced"
+    },
+    {
+        "user": "revanced",
+        "repo": "revanced-cli",
+        "tag": "latest"
+    },
+    {
+        "user": "scrazzz",
+        "repo": "my-revanced-patches",
+        "tag": "latest"
+    },
+    {
+        "user": "revanced",
+        "repo": "revanced-integrations",
+        "tag": "latest"
+    }
+]
