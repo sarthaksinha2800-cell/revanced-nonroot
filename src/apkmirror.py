@@ -12,15 +12,24 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
     version_parts = version.split('.')
     found_soup = None
     
+    # Use release_prefix if available, otherwise use app name
+    release_name = config.get('release_prefix', config['name'])
+    
     # Loop backwards: Try full version, then strip parts until we find a 200 OK page.
     for i in range(len(version_parts), 0, -1):
         current_ver_str = "-".join(version_parts[:i])
         
         # Try multiple URL patterns
-        url_patterns = [
-            f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{current_ver_str}/",
-            f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{current_ver_str}-release/",
-        ]
+        url_patterns = []
+        
+        # Pattern 1: With release_name (main pattern)
+        url_patterns.append(f"{base_url}/apk/{config['org']}/{config['name']}/{release_name}-{current_ver_str}/")
+        url_patterns.append(f"{base_url}/apk/{config['org']}/{config['name']}/{release_name}-{current_ver_str}-release/")
+        
+        # Pattern 2: With app name (fallback for backward compatibility)
+        if release_name != config['name']:
+            url_patterns.append(f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{current_ver_str}/")
+            url_patterns.append(f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{current_ver_str}-release/")
         
         for url in url_patterns:
             logging.info(f"Checking potential release URL: {url}")
@@ -30,22 +39,21 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
                 content_size = len(response.content)
                 logging.info(f"URL:{response.url} [{content_size}/{content_size}] -> Found Page")
                 found_soup = BeautifulSoup(response.content, "html.parser")
-                break
+                break  # Break out of URL patterns loop
             elif response.status_code == 404:
-                continue
+                continue  # Try next pattern
             else:
+                # For other status codes, log but continue
                 logging.warning(f"URL {url} returned status {response.status_code}")
                 continue
         
         if found_soup:
-            break
+            break  # Break out of version parts loop
     
     if not found_soup:
         logging.error(f"Could not find any release page for {app_name} {version}")
         return None
-    # --- UNIVERSAL URL FINDER END ---
 
-    # Now we are on the correct page (either specific or parent).
     # We must find the specific variant that matches our criteria.
     rows = found_soup.find_all('div', class_='table-row headerFont')
     download_page_url = None
@@ -113,10 +121,26 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
 
     return None
     
-
-def get_latest_version(app_name: str, config: str) -> str:
+def get_latest_version(app_name: str, config: dict) -> str:
+    # First try: get from main app page
+    try:
+        main_url = f"{base_url}/apk/{config['org']}/{config['name']}/"
+        response = session.get(main_url)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.content, "html.parser")
+            # Try to find version in the page
+            version_elem = soup.find('span', string=re.compile(r'\d+\.\d+'))
+            if version_elem:
+                version_text = version_elem.text.strip()
+                match = re.search(r'(\d+(\.\d+)+)', version_text)
+                if match:
+                    return match.group(1)
+    except:
+        pass  # If fails, continue to original method
+    
+    # Original method (keep exactly as you had it)
     url = f"{base_url}/uploads/?appcategory={config['name']}"
-
+    
     response = session.get(url)
     response.raise_for_status()
     content_size = len(response.content)
@@ -131,11 +155,8 @@ def get_latest_version(app_name: str, config: str) -> str:
         if "alpha" not in version_text.lower() and "beta" not in version_text.lower():
             match = version_pattern.search(version_text)
             if match:
-                # Extract just the base version (without build numbers if present)
                 version = match.group()
-                # Remove any build suffix for consistency
                 version_parts = version.split('.')
-                # Keep only numeric parts (remove build identifiers)
                 base_version_parts = []
                 for part in version_parts:
                     if part.isdigit():
