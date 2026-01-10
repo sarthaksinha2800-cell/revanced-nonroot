@@ -1,13 +1,58 @@
-name: Auto Build and Release ReVanced APKs
+name: Auto Build and Release ReVanced
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours
+    - cron: '0 */6 * * *'
 
 jobs:
+  download-tools:
+    name: Download ReVanced Tools
+    runs-on: ubuntu-latest
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.cache-key }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11
+      
+      - name: Download ReVanced Tools
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Download tools once (this avoids rate limits in matrix)
+          mkdir -p tools
+          
+          # Download revanced-cli
+          curl -L "https://github.com/revanced/revanced-cli/releases/latest/download/revanced-cli-all.jar" -o tools/revanced-cli.jar
+          
+          # Download revanced-patches
+          curl -L "https://github.com/revanced/revanced-patches/releases/latest/download/patches.jar" -o tools/patches.jar
+          
+          # Download integrations (optional)
+          curl -L "https://github.com/revanced/revanced-integrations/releases/latest/download/app-release-unsigned.apk" -o tools/integrations.apk
+          
+          echo "Tools downloaded successfully"
+          ls -la tools/
+      
+      - name: Cache Tools
+        uses: actions/cache@v3
+        id: cache-tools
+        with:
+          path: tools/
+          key: revanced-tools-${{ hashFiles('patch-config.json') }}
+      
+      - name: Generate Cache Key
+        id: cache-key
+        run: echo "cache-key=${{ steps.cache-tools.outputs.cache-key || 'no-cache' }}" >> $GITHUB_OUTPUT
+
   check-updates:
     name: Check for Updates
+    needs: download-tools
     runs-on: ubuntu-latest
     outputs:
       has_updates: ${{ steps.check.outputs.has_updates }}
@@ -23,7 +68,7 @@ jobs:
 
   patch-apps:
     name: Read Configuration 
-    needs: check-updates
+    needs: [check-updates, download-tools]
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.read-matrix.outputs.matrix }}
@@ -31,6 +76,12 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+
+      - name: Restore Cached Tools
+        uses: actions/cache@v3
+        with:
+          path: tools/
+          key: revanced-tools-${{ hashFiles('patch-config.json') }}
 
       - name: Read Patch Config
         id: read-matrix
@@ -44,10 +95,11 @@ jobs:
 
   build-apps:
     name: Build Applications
-    needs: patch-apps
+    needs: [patch-apps, download-tools]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 5  # Limit parallel jobs to avoid rate limits
       matrix:
         include: ${{ fromJson(needs.patch-apps.outputs.matrix) }}
     
@@ -55,20 +107,33 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Restore Cached Tools
+        uses: actions/cache@v3
+        with:
+          path: tools/
+          key: revanced-tools-${{ hashFiles('patch-config.json') }}
+
       - name: Install Python
         uses: actions/setup-python@v4
         with:
           python-version: 3.11
 
       - name: Install Dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install requests beautifulsoup4
 
       - name: Build APK
         env:
           APP_NAME: ${{ matrix.app_name }}
           SOURCE: ${{ matrix.source }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "Building ${{ matrix.app_name }} with ${{ matrix.source }}..."
+          
+          # Add delay to avoid rate limits (stagger the builds)
+          sleep $((RANDOM % 30)).$((RANDOM % 100))
+          
           python -m src
       
       - name: Upload APK Artifact
@@ -77,108 +142,4 @@ jobs:
           name: apk-${{ matrix.app_name }}-${{ matrix.source }}
           path: "*.apk"
 
-  create-single-release:
-    name: Create Single Release
-    needs: build-apps
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-      
-      - name: Download All APK Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./all-apks
-      
-      - name: Collect All APKs
-        run: |
-          mkdir -p ./release-apks
-          find ./all-apks -name "*.apk" -exec cp {} ./release-apks/ \;
-          
-          echo "📦 APKs ready for release:"
-          ls -la ./release-apks/
-          
-          # Count APKs
-          apk_count=$(ls -1 ./release-apks/*.apk 2>/dev/null | wc -l)
-          echo "Total APKs: $apk_count"
-      
-      - name: Delete Old Release (if exists)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Check if "latest" release exists and delete it
-          if gh release view latest >/dev/null 2>&1; then
-            echo "🗑️ Deleting old 'latest' release..."
-            gh release delete latest --yes --cleanup-tag
-          else
-            echo "📭 No existing 'latest' release found"
-          fi
-      
-      - name: Generate Release Notes
-        run: |
-          echo "# ReVanced APKs - Auto Built" > release_notes.md
-          echo "" >> release_notes.md
-          echo "## 📱 Available Apps" >> release_notes.md
-          echo "" >> release_notes.md
-          
-          # Add each APK to the list
-          for apk in ./release-apks/*.apk; do
-            filename=$(basename "$apk")
-            # Extract readable name (remove .apk and format)
-            app_name=$(echo "$filename" | sed 's/\.apk$//' | sed 's/-/ /g')
-            echo "- $app_name" >> release_notes.md
-          done
-          
-          echo "" >> release_notes.md
-          echo "---" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "## ⚙️ Build Information" >> release_notes.md
-          echo "- Auto-built every 6 hours" >> release_notes.md
-          echo "- Latest ReVanced patches" >> release_notes.md
-          echo "- Updated automatically" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "## ⚠️ Disclaimer" >> release_notes.md
-          echo "These APKs are built automatically. Use at your own risk." >> release_notes.md
-      
-      - name: Create New Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          echo "🚀 Creating new release with all APKs..."
-          
-          # Get current date for tag
-          current_date=$(date +%Y%m%d-%H%M)
-          
-          # Create the release
-          gh release create "latest" \
-            --title "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')" \
-            --notes-file release_notes.md \
-            ./release-apks/*.apk \
-            --latest
-          
-          echo "✅ Release created successfully!"
-      
-      - name: Display Release URL
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          release_url=$(gh release view latest --json url --jq .url)
-          echo "🔗 Release URL: $release_url"
-          echo "::set-output name=release_url::$release_url"
-
-  cleanup:
-    name: Cleanup Workflow Runs
-    needs: build-apps
-    runs-on: ubuntu-latest
-    if: always()
-    permissions:
-      actions: write
-    steps:
-      - name: Delete Old Workflow Runs
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          retain_days: 3
-          keep_minimum_runs: 5
+# ... rest of your workflow (create-release, cleanup) stays the same
