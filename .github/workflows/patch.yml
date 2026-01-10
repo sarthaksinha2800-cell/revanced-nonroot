@@ -95,11 +95,10 @@ jobs:
 
   build-apps:
     name: Build Applications
-    needs: [patch-apps, download-tools]
+    needs: patch-apps
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 5  # Limit parallel jobs to avoid rate limits
       matrix:
         include: ${{ fromJson(needs.patch-apps.outputs.matrix) }}
     
