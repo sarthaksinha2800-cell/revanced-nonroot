@@ -29,6 +29,12 @@ def run_build(app_name: str, source: str) -> str:
         input_apk, version = method(app_name, revanced_cli, revanced_patches)
         if input_apk:
             break
+            
+    if input_apk is None:
+        logging.error(f"❌ Failed to download APK for {app_name}")
+        logging.error("All download sources failed. Skipping this app.")
+        return None
+
 
     if input_apk.suffix != ".apk":
         logging.warning("Input file is not .apk, using APKEditor to merge")
