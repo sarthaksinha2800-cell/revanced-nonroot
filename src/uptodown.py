@@ -39,7 +39,7 @@ def get_download_link(version: str, app_name: str, config: str) -> str:
     for uptodown_name in possible_names:
         base_url = f"https://{uptodown_name}.en.uptodown.com/android"
         try:
-            response = session.get(f"{base_url}/versions")
+            response = session.get(base_url)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, "html.parser")
