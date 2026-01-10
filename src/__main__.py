@@ -150,4 +150,5 @@ if __name__ == "__main__":
         exit(1)
 
     apk_path = run_build(app_name, source)
-    print(f"🎯 Final APK path: {apk_path}")
+    if apk_path:
+        print(f"🎯 Final APK path: {apk_path}")
