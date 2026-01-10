@@ -13,11 +13,10 @@ jobs:
       
       - name: Run Config Generator Script
         run: |
-          # Copy and paste the ENTIRE script here
           # Create directory structure
           mkdir -p apps/{apkmirror,apkpure,uptodown}
 
-          # Define all apps with their package names and APKMirror orgs
+          # Define all apps
           declare -A apps=(
             ["disney-plus"]="com.disney.disneyplus:disney:disney-plus"
             ["facebook"]="com.facebook.katana:facebook-2:facebook"
@@ -83,5 +82,5 @@ EOF
           git config --global user.name "GitHub Actions"
           git config --global user.email "actions@github.com"
           git add apps/
-          git commit -m "Add configs for 17 new apps"
+          git commit -m "Add configs for 17 new apps" || echo "No changes to commit"
           git push
