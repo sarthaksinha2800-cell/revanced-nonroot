@@ -18,22 +18,35 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
     for i in range(len(version_parts), 0, -1):
         current_ver_str = "-".join(version_parts[:i])
         
-        # Construct the URL attempt
-        url = (f"{base_url}/apk/{config['org']}/{config['name']}/"
-               f"{config['name']}-{current_ver_str}-release/")
+        # Try multiple URL patterns
+        url_patterns = [
+            # Try without -release first (for apps like RAR)
+            f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{current_ver_str}/",
+            # Try with -release (for most other apps)
+            f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{current_ver_str}-release/",
+            # Try with dots instead of hyphens
+            f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{'.'.join(version_parts[:i])}/",
+            f"{base_url}/apk/{config['org']}/{config['name']}/{config['name']}-{'.'.join(version_parts[:i])}-release/",
+        ]
         
-        logging.info(f"Checking potential release URL: {url}")
+        for url in url_patterns:
+            logging.info(f"Checking potential release URL: {url}")
+            
+            response = session.get(url)
+            if response.status_code == 200:
+                content_size = len(response.content)
+                logging.info(f"URL:{response.url} [{content_size}/{content_size}] -> Found Page")
+                found_soup = BeautifulSoup(response.content, "html.parser")
+                break  # Break out of URL patterns loop
+            elif response.status_code == 404:
+                continue  # Try next pattern
+            else:
+                # For other status codes, log but continue
+                logging.warning(f"URL {url} returned status {response.status_code}")
+                continue
         
-        response = session.get(url)
-        if response.status_code == 200:
-            content_size = len(response.content)
-            logging.info(f"URL:{response.url} [{content_size}/{content_size}] -> Found Page")
-            found_soup = BeautifulSoup(response.content, "html.parser")
-            break
-        elif response.status_code == 404:
-            continue
-        else:
-            response.raise_for_status()
+        if found_soup:
+            break  # Break out of version parts loop
     
     if not found_soup:
         logging.error(f"Could not find any release page for {app_name} {version}")
@@ -51,7 +64,10 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
         # CRITICAL CHECK: Ensure the row actually contains our specific version number.
         # This prevents downloading the wrong build (e.g., .557) when on a parent page (3.0.412).
         if version not in row_text:
-            continue
+            # Also try with hyphens instead of dots for version matching
+            version_with_hyphens = version.replace('.', '-')
+            if version_with_hyphens not in row_text:
+                continue
 
         if all(criterion in row_text for criterion in criteria):
             sub_url = row.find('a', class_='accent_color')
@@ -60,8 +76,25 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
                 break
 
     if not download_page_url:
-        logging.error(f"Variant {version} not found with criteria {criteria}")
-        return None
+        # Try looser matching if exact version not found
+        for row in rows:
+            row_text = row.get_text()
+            # Check if any part of the version is in the row
+            version_found = False
+            for part in version.split('.'):
+                if part in row_text:
+                    version_found = True
+                    break
+            
+            if version_found and all(criterion in row_text for criterion in criteria):
+                sub_url = row.find('a', class_='accent_color')
+                if sub_url:
+                    download_page_url = base_url + sub_url['href']
+                    break
+        
+        if not download_page_url:
+            logging.error(f"Variant {version} not found with criteria {criteria}")
+            return None
 
     # --- STANDARD DOWNLOAD FLOW (Page 2 -> Page 3 -> Link) ---
     response = session.get(download_page_url)
