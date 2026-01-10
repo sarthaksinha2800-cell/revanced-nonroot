@@ -142,4 +142,108 @@ jobs:
           name: apk-${{ matrix.app_name }}-${{ matrix.source }}
           path: "*.apk"
 
-# ... rest of your workflow (create-release, cleanup) stays the same
+  create-single-release:
+    name: Create Single Release
+    needs: build-apps
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Download All APK Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./all-apks
+      
+      - name: Collect All APKs
+        run: |
+          mkdir -p ./release-apks
+          find ./all-apks -name "*.apk" -exec cp {} ./release-apks/ \;
+          
+          echo "📦 APKs ready for release:"
+          ls -la ./release-apks/
+          
+          # Count APKs
+          apk_count=$(ls -1 ./release-apks/*.apk 2>/dev/null | wc -l)
+          echo "Total APKs: $apk_count"
+      
+      - name: Delete Old Release (if exists)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if "latest" release exists and delete it
+          if gh release view latest >/dev/null 2>&1; then
+            echo "🗑️ Deleting old 'latest' release..."
+            gh release delete latest --yes --cleanup-tag
+          else
+            echo "📭 No existing 'latest' release found"
+          fi
+      
+      - name: Generate Release Notes
+        run: |
+          echo "# ReVanced APKs - Auto Built" > release_notes.md
+          echo "" >> release_notes.md
+          echo "## 📱 Available Apps" >> release_notes.md
+          echo "" >> release_notes.md
+          
+          # Add each APK to the list
+          for apk in ./release-apks/*.apk; do
+            filename=$(basename "$apk")
+            # Extract readable name (remove .apk and format)
+            app_name=$(echo "$filename" | sed 's/\.apk$//' | sed 's/-/ /g')
+            echo "- $app_name" >> release_notes.md
+          done
+          
+          echo "" >> release_notes.md
+          echo "---" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "## ⚙️ Build Information" >> release_notes.md
+          echo "- Auto-built every 6 hours" >> release_notes.md
+          echo "- Latest ReVanced patches" >> release_notes.md
+          echo "- Updated automatically" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "## ⚠️ Disclaimer" >> release_notes.md
+          echo "These APKs are built automatically. Use at your own risk." >> release_notes.md
+      
+      - name: Create New Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "🚀 Creating new release with all APKs..."
+          
+          # Get current date for tag
+          current_date=$(date +%Y%m%d-%H%M)
+          
+          # Create the release
+          gh release create "latest" \
+            --title "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')" \
+            --notes-file release_notes.md \
+            ./release-apks/*.apk \
+            --latest
+          
+          echo "✅ Release created successfully!"
+      
+      - name: Display Release URL
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          release_url=$(gh release view latest --json url --jq .url)
+          echo "🔗 Release URL: $release_url"
+          echo "::set-output name=release_url::$release_url"
+
+  cleanup:
+    name: Cleanup Workflow Runs
+    needs: build-apps
+    runs-on: ubuntu-latest
+    if: always()
+    permissions:
+      actions: write
+    steps:
+      - name: Delete Old Workflow Runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          retain_days: 3
+          keep_minimum_runs: 5
