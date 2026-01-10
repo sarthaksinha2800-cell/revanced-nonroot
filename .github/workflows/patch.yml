@@ -146,6 +146,7 @@ jobs:
     name: Create Single Release
     needs: build-apps
     runs-on: ubuntu-latest
+    if: always() 
     permissions:
       contents: write
     
@@ -157,20 +158,34 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: ./all-apks
+          if-no-files-found: warn
+
+      - name: Check if Any APKs Were Built
+        id: check-apks
+        run: |
+          # Count APK files
+          apk_count=$(find ./all-apks -name "*.apk" 2>/dev/null | wc -l)
+          echo "Found $apk_count APK(s)"
+          
+          if [ $apk_count -eq 0 ]; then
+            echo "❌ No APKs were built successfully"
+            echo "skip_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "✅ $apk_count APK(s) ready for release"
+            echo "skip_release=false" >> $GITHUB_OUTPUT
+          fi
       
       - name: Collect All APKs
+        if: steps.check-apks.outputs.skip_release == 'false'
         run: |
           mkdir -p ./release-apks
           find ./all-apks -name "*.apk" -exec cp {} ./release-apks/ \;
           
           echo "📦 APKs ready for release:"
           ls -la ./release-apks/
-          
-          # Count APKs
-          apk_count=$(ls -1 ./release-apks/*.apk 2>/dev/null | wc -l)
-          echo "Total APKs: $apk_count"
       
-      - name: Delete Old Release (if exists)
+      - name: Delete Old Release
+        if: steps.check-apks.outputs.skip_release == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -183,6 +198,7 @@ jobs:
           fi
       
       - name: Generate Release Notes
+        if: steps.check-apks.outputs.skip_release == 'false'
         run: |
           echo "# ReVanced APKs - Auto Built" > release_notes.md
           echo "" >> release_notes.md
@@ -209,10 +225,11 @@ jobs:
           echo "These APKs are built automatically. Use at your own risk." >> release_notes.md
       
       - name: Create New Release
+        if: steps.check-apks.outputs.skip_release == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🚀 Creating new release with all APKs..."
+          echo "🚀 Creating new release with $apk_count APK(s)..."
           
           # Get current date for tag
           current_date=$(date +%Y%m%d-%H%M)
