@@ -1,0 +1,87 @@
+name: Generate App Configs
+
+on:
+  workflow_dispatch:  # Manual trigger only
+
+jobs:
+  generate-configs:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Run Config Generator Script
+        run: |
+          # Copy and paste the ENTIRE script here
+          # Create directory structure
+          mkdir -p apps/{apkmirror,apkpure,uptodown}
+
+          # Define all apps with their package names and APKMirror orgs
+          declare -A apps=(
+            ["disney-plus"]="com.disney.disneyplus:disney:disney-plus"
+            ["facebook"]="com.facebook.katana:facebook-2:facebook"
+            ["duolingo"]="com.duolingo:duolingo:duolingo"
+            ["google-news"]="com.google.android.apps.magazines:google-inc:google-news"
+            ["messenger"]="com.facebook.orca:facebook-2:messenger"
+            ["lightroom"]="com.adobe.lrmobile:adobe:lightroom"
+            ["photomath"]="com.microblink.photomath:photomath:photomath"
+            ["pixiv"]="jp.pxv.android:pixiv:pixiv"
+            ["prime-video"]="com.amazon.avod.thirdpartyclient:amazon-com:amazon-prime-video"
+            ["proton-mail"]="ch.protonmail.android:proton-technologies:proton-mail"
+            ["proton-vpn"]="ch.protonvpn.android:proton-technologies:protonvpn"
+            ["rar"]="com.rarlab.rar:rarlab:rar"
+            ["spotify"]="com.spotify.music:spotify-ltd:spotify"
+            ["strava"]="com.strava:strava:strava"
+            ["tumblr"]="com.tumblr:tumblr:tumblr"
+            ["twitch"]="tv.twitch.android.app:twitch-interactive:twitch"
+            ["viber"]="com.viber.voip:viber:viber"
+          )
+
+          # Create configs for each app
+          for app_name in "${!apps[@]}"; do
+            IFS=':' read -r package org apkmirror_name <<< "${apps[$app_name]}"
+            
+            # APKMirror config
+            cat > "apps/apkmirror/$app_name.json" << EOF
+{
+    "org": "$org",
+    "name": "$apkmirror_name",
+    "type": "APK",
+    "arch": "universal",
+    "dpi": "nodpi",
+    "package": "$package",
+    "version": ""
+}
+EOF
+            
+            # APKPure config
+            cat > "apps/apkpure/$app_name.json" << EOF
+{
+    "name": "$app_name",
+    "package": "$package",
+    "version": ""
+}
+EOF
+            
+            # Uptodown config
+            cat > "apps/uptodown/$app_name.json" << EOF
+{
+    "name": "$app_name",
+    "package": "$package",
+    "version": ""
+}
+EOF
+            
+            echo "✅ Created configs for $app_name"
+          done
+
+          echo "🎯 Configs created for all 17 apps!"
+      
+      - name: Commit Generated Configs
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          git add apps/
+          git commit -m "Add configs for 17 new apps"
+          git push
