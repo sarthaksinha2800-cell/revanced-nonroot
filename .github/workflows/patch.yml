@@ -24,20 +24,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Download tools once (this avoids rate limits in matrix)
           mkdir -p tools
-          
-          # Download revanced-cli
           curl -L "https://github.com/revanced/revanced-cli/releases/latest/download/revanced-cli-all.jar" -o tools/revanced-cli.jar
-          
-          # Download revanced-patches
           curl -L "https://github.com/revanced/revanced-patches/releases/latest/download/patches.jar" -o tools/patches.jar
-          
-          # Download integrations (optional)
           curl -L "https://github.com/revanced/revanced-integrations/releases/latest/download/app-release-unsigned.apk" -o tools/integrations.apk
-          
           echo "Tools downloaded successfully"
-          ls -la tools/
       
       - name: Cache Tools
         uses: actions/cache@v3
@@ -63,35 +54,67 @@ jobs:
       
       - name: Always Build
         id: check
-        run: |
-          echo "has_updates=true" >> $GITHUB_OUTPUT
+        run: echo "has_updates=true" >> $GITHUB_OUTPUT
 
   patch-apps:
-    name: Read Configuration 
+    name: Generate Build Matrix
     needs: [check-updates, download-tools]
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.read-matrix.outputs.matrix }}
+      matrix: ${{ steps.generate-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Restore Cached Tools
-        uses: actions/cache@v3
-        with:
-          path: tools/
-          key: revanced-tools-${{ hashFiles('patch-config.json') }}
-
-      - name: Read Patch Config
-        id: read-matrix
+      - name: Generate Architecture-Aware Matrix
+        id: generate-matrix
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            const path = './patch-config.json';
-            const matrix = JSON.parse(fs.readFileSync(path, 'utf8')).patch_list;
-            core.setOutput("matrix", JSON.stringify(matrix));
+            
+            // Read the patch configuration
+            const patchConfig = JSON.parse(fs.readFileSync('./patch-config.json', 'utf8'));
+            
+            // Define which apps need multiple architectures
+            const multiArchApps = {
+              'youtube': ['arm64-v8a', 'armeabi-v7a'],
+              'youtube-music': ['arm64-v8a', 'armeabi-v7a'],
+              'google-photos': ['arm64-v8a', 'armeabi-v7a']
+              // Add more apps here as needed: 'app-name': ['arch1', 'arch2']
+            };
+            
+            // Generate expanded matrix
+            const expandedMatrix = [];
+            
+            for (const item of patchConfig.patch_list) {
+              const appName = item.app_name;
+              const source = item.source;
+              
+              if (multiArchApps[appName]) {
+                // This app needs multiple architectures
+                for (const arch of multiArchApps[appName]) {
+                  expandedMatrix.push({
+                    app_name: appName,
+                    source: source,
+                    arch: arch
+                  });
+                }
+              } else {
+                // Default: universal architecture
+                expandedMatrix.push({
+                  app_name: appName,
+                  source: source,
+                  arch: 'universal'
+                });
+              }
+            }
+            
+            console.log(`Generated matrix with ${expandedMatrix.length} jobs`);
+            console.log('First few items:', expandedMatrix.slice(0, 3));
+            
+            core.setOutput("matrix", JSON.stringify(expandedMatrix));
 
   build-apps:
     name: Build Applications
@@ -126,11 +149,12 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app_name }}
           SOURCE: ${{ matrix.source }}
+          ARCH: ${{ matrix.arch }}  # Pass architecture to Python script
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Building ${{ matrix.app_name }} with ${{ matrix.source }}..."
+          echo "Building ${{ matrix.app_name }} (${{ matrix.source }}) for ${{ matrix.arch }}..."
           
-          # Add delay to avoid rate limits (stagger the builds)
+          # Add delay to avoid rate limits
           sleep $((RANDOM % 30)).$((RANDOM % 100))
           
           python -m src
@@ -138,7 +162,7 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ matrix.app_name }}-${{ matrix.source }}
+          name: apk-${{ matrix.app_name }}-${{ matrix.source }}-${{ matrix.arch }}
           path: "*.apk"
 
   create-single-release:
@@ -162,15 +186,12 @@ jobs:
       - name: Check if Any APKs Were Built
         id: check-apks
         run: |
-          # Count APK files
           apk_count=$(find ./all-apks -name "*.apk" 2>/dev/null | wc -l)
           echo "Found $apk_count APK(s)"
           
           if [ $apk_count -eq 0 ]; then
-            echo "❌ No APKs were built successfully"
             echo "skip_release=true" >> $GITHUB_OUTPUT
           else
-            echo "✅ $apk_count APK(s) ready for release"
             echo "skip_release=false" >> $GITHUB_OUTPUT
           fi
       
@@ -179,8 +200,7 @@ jobs:
         run: |
           mkdir -p ./release-apks
           find ./all-apks -name "*.apk" -exec cp {} ./release-apks/ \;
-          
-          echo "📦 APKs ready for release:"
+          echo "APKs ready for release:"
           ls -la ./release-apks/
       
       - name: Delete Old Release
@@ -188,12 +208,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Check if "latest" release exists and delete it
           if gh release view latest >/dev/null 2>&1; then
-            echo "🗑️ Deleting old 'latest' release..."
+            echo "Deleting old 'latest' release..."
             gh release delete latest --yes --cleanup-tag
           else
-            echo "📭 No existing 'latest' release found"
+            echo "No existing 'latest' release found"
           fi
       
       - name: Generate Release Notes
@@ -201,54 +220,45 @@ jobs:
         run: |
           echo "# ReVanced APKs - Auto Built" > release_notes.md
           echo "" >> release_notes.md
-          echo "## 📱 Available Apps" >> release_notes.md
+          echo "## 📱 Available Apps (with Architecture)" >> release_notes.md
           echo "" >> release_notes.md
           
-          # Add each APK to the list
           for apk in ./release-apks/*.apk; do
             filename=$(basename "$apk")
-            # Extract readable name (remove .apk and format)
-            app_name=$(echo "$filename" | sed 's/\.apk$//' | sed 's/-/ /g')
-            echo "- $app_name" >> release_notes.md
+            echo "- $filename" >> release_notes.md
           done
           
           echo "" >> release_notes.md
           echo "---" >> release_notes.md
           echo "" >> release_notes.md
           echo "## ⚙️ Build Information" >> release_notes.md
+          echo "- Includes architecture-specific builds for some apps" >> release_notes.md
           echo "- Auto-built every 6 hours" >> release_notes.md
-          echo "- Latest ReVanced patches" >> release_notes.md
-          echo "- Updated automatically" >> release_notes.md
           echo "" >> release_notes.md
-          echo "## ⚠️ Disclaimer" >> release_notes.md
-          echo "These APKs are built automatically. Use at your own risk." >> release_notes.md
+          echo "## 🏗️ Supported Architectures" >> release_notes.md
+          echo "- arm64-v8a (64-bit ARM)" >> release_notes.md
+          echo "- armeabi-v7a (32-bit ARM)" >> release_notes.md
+          echo "- universal (for most apps)" >> release_notes.md
       
       - name: Create New Release
         if: steps.check-apks.outputs.skip_release == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🚀 Creating new release with $apk_count APK(s)..."
-          
-          # Get current date for tag
           current_date=$(date +%Y%m%d-%H%M)
-          
-          # Create the release
           gh release create "latest" \
             --title "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')" \
             --notes-file release_notes.md \
             ./release-apks/*.apk \
             --latest
-          
-          echo "✅ Release created successfully!"
+          echo "Release created successfully!"
       
       - name: Display Release URL
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           release_url=$(gh release view latest --json url --jq .url)
-          echo "🔗 Release URL: $release_url"
-          echo "::set-output name=release_url::$release_url"
+          echo "Release URL: $release_url"
 
   cleanup:
     name: Cleanup Workflow Runs
