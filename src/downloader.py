@@ -55,7 +55,7 @@ def download_required(source: str) -> tuple[list[Path], str]:
 
     return downloaded_files, name
 
-def download_platform(app_name: str, platform: str, cli: str, patches: str) -> tuple[Path | None, str | None]:
+def download_platform(app_name: str, platform: str, cli: str, patches: str, arch: str = None) -> tuple[Path | None, str | None]:
     try:
         config_path = Path("apps") / platform / f"{app_name}.json"
         if not config_path.exists():
@@ -63,12 +63,15 @@ def download_platform(app_name: str, platform: str, cli: str, patches: str) -> t
 
         with config_path.open() as json_file:
             config = json.load(json_file)
+        
+        # Override arch if specified
+        if arch:
+            config['arch'] = arch
 
         version = config.get("version") or utils.get_supported_version(config['package'], cli, patches)
-
         platform_module = globals()[platform]
         version = version or platform_module.get_latest_version(app_name, config)
-
+        
         download_link = platform_module.get_download_link(version, app_name, config)
         filepath = download_resource(download_link)
         return filepath, version 
@@ -77,14 +80,15 @@ def download_platform(app_name: str, platform: str, cli: str, patches: str) -> t
         logging.error(f"Unexpected error: {e}")
         return None, None
 
-def download_apkmirror(app_name: str, cli: str, patches: str) -> tuple[Path | None, str | None]:
-    return download_platform(app_name, "apkmirror", cli, patches)
+# Update the specific download functions
+def download_apkmirror(app_name: str, cli: str, patches: str, arch: str = None) -> tuple[Path | None, str | None]:
+    return download_platform(app_name, "apkmirror", cli, patches, arch)
 
-def download_apkpure(app_name: str, cli: str, patches: str) -> tuple[Path | None, str | None]:
-    return download_platform(app_name, "apkpure", cli, patches)
+def download_apkpure(app_name: str, cli: str, patches: str, arch: str = None) -> tuple[Path | None, str | None]:
+    return download_platform(app_name, "apkpure", cli, patches, arch)
 
-def download_uptodown(app_name: str, cli: str, patches: str) -> tuple[Path | None, str | None]:
-    return download_platform(app_name, "uptodown", cli, patches)
+def download_uptodown(app_name: str, cli: str, patches: str, arch: str = None) -> tuple[Path | None, str | None]:
+    return download_platform(app_name, "uptodown", cli, patches, arch)
 
 def download_apkeditor() -> Path:
     release = utils.detect_github_release("REAndroid", "APKEditor", "latest")
