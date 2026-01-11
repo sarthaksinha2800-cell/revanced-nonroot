@@ -28,14 +28,13 @@ jobs:
           curl -L "https://github.com/revanced/revanced-cli/releases/latest/download/revanced-cli-all.jar" -o tools/revanced-cli.jar
           curl -L "https://github.com/revanced/revanced-patches/releases/latest/download/patches.jar" -o tools/patches.jar
           curl -L "https://github.com/revanced/revanced-integrations/releases/latest/download/app-release-unsigned.apk" -o tools/integrations.apk
-          echo "Tools downloaded successfully"
       
       - name: Cache Tools
         uses: actions/cache@v3
         id: cache-tools
         with:
           path: tools/
-          key: revanced-tools-${{ hashFiles('patch-config.json') }}
+          key: revanced-tools-${{ hashFiles('patch-config.json', 'arch-config.json') }}
       
       - name: Generate Cache Key
         id: cache-key
@@ -57,64 +56,31 @@ jobs:
         run: echo "has_updates=true" >> $GITHUB_OUTPUT
 
   patch-apps:
-    name: Generate Build Matrix
+    name: Read Configuration 
     needs: [check-updates, download-tools]
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.generate-matrix.outputs.matrix }}
+      matrix: ${{ steps.read-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Generate Architecture-Aware Matrix
-        id: generate-matrix
+      - name: Restore Cached Tools
+        uses: actions/cache@v3
+        with:
+          path: tools/
+          key: revanced-tools-${{ hashFiles('patch-config.json', 'arch-config.json') }}
+
+      - name: Read Patch Config
+        id: read-matrix
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
-            
-            // Read the patch configuration
-            const patchConfig = JSON.parse(fs.readFileSync('./patch-config.json', 'utf8'));
-            
-            // Define which apps need multiple architectures
-            const multiArchApps = {
-              'youtube': ['arm64-v8a', 'armeabi-v7a'],
-              'youtube-music': ['arm64-v8a', 'armeabi-v7a'],
-              'google-photos': ['arm64-v8a', 'armeabi-v7a']
-              // Add more apps here as needed: 'app-name': ['arch1', 'arch2']
-            };
-            
-            // Generate expanded matrix
-            const expandedMatrix = [];
-            
-            for (const item of patchConfig.patch_list) {
-              const appName = item.app_name;
-              const source = item.source;
-              
-              if (multiArchApps[appName]) {
-                // This app needs multiple architectures
-                for (const arch of multiArchApps[appName]) {
-                  expandedMatrix.push({
-                    app_name: appName,
-                    source: source,
-                    arch: arch
-                  });
-                }
-              } else {
-                // Default: universal architecture
-                expandedMatrix.push({
-                  app_name: appName,
-                  source: source,
-                  arch: 'universal'
-                });
-              }
-            }
-            
-            console.log(`Generated matrix with ${expandedMatrix.length} jobs`);
-            console.log('First few items:', expandedMatrix.slice(0, 3));
-            
-            core.setOutput("matrix", JSON.stringify(expandedMatrix));
+            const path = './patch-config.json';
+            const matrix = JSON.parse(fs.readFileSync(path, 'utf8')).patch_list;
+            core.setOutput("matrix", JSON.stringify(matrix));
 
   build-apps:
     name: Build Applications
@@ -133,7 +99,7 @@ jobs:
         uses: actions/cache@v3
         with:
           path: tools/
-          key: revanced-tools-${{ hashFiles('patch-config.json') }}
+          key: revanced-tools-${{ hashFiles('patch-config.json', 'arch-config.json') }}
 
       - name: Install Python
         uses: actions/setup-python@v4
@@ -149,12 +115,9 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app_name }}
           SOURCE: ${{ matrix.source }}
-          ARCH: ${{ matrix.arch }}  # Pass architecture to Python script
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "Building ${{ matrix.app_name }} (${{ matrix.source }}) for ${{ matrix.arch }}..."
-          
-          # Add delay to avoid rate limits
+          echo "Building ${{ matrix.app_name }} with ${{ matrix.source }}..."
           sleep $((RANDOM % 30)).$((RANDOM % 100))
           
           python -m src
@@ -162,7 +125,7 @@ jobs:
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ matrix.app_name }}-${{ matrix.source }}-${{ matrix.arch }}
+          name: apk-${{ matrix.app_name }}-${{ matrix.source }}
           path: "*.apk"
 
   create-single-release:
@@ -190,8 +153,10 @@ jobs:
           echo "Found $apk_count APK(s)"
           
           if [ $apk_count -eq 0 ]; then
+            echo "❌ No APKs were built successfully"
             echo "skip_release=true" >> $GITHUB_OUTPUT
           else
+            echo "✅ $apk_count APK(s) ready for release"
             echo "skip_release=false" >> $GITHUB_OUTPUT
           fi
       
@@ -200,65 +165,83 @@ jobs:
         run: |
           mkdir -p ./release-apks
           find ./all-apks -name "*.apk" -exec cp {} ./release-apks/ \;
-          echo "APKs ready for release:"
+          
+          echo "📦 APKs ready for release:"
           ls -la ./release-apks/
       
-      - name: Delete Old Release
-        if: steps.check-apks.outputs.skip_release == 'false'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          if gh release view latest >/dev/null 2>&1; then
-            echo "Deleting old 'latest' release..."
-            gh release delete latest --yes --cleanup-tag
-          else
-            echo "No existing 'latest' release found"
-          fi
-      
-      - name: Generate Release Notes
+      - name: Generate Release Notes with Architecture Info
         if: steps.check-apks.outputs.skip_release == 'false'
         run: |
           echo "# ReVanced APKs - Auto Built" > release_notes.md
           echo "" >> release_notes.md
-          echo "## 📱 Available Apps (with Architecture)" >> release_notes.md
+          echo "## 📱 Available Apps" >> release_notes.md
           echo "" >> release_notes.md
           
+          # Group by app
+          declare -A app_versions
           for apk in ./release-apks/*.apk; do
             filename=$(basename "$apk")
-            echo "- $filename" >> release_notes.md
+            # Extract app name (remove arch and version)
+            app_name=$(echo "$filename" | sed -E 's/-(arm64-v8a|armeabi-v7a|universal|patch|revanced|cli).*//' | sed 's/-/ /g')
+            
+            # Extract architecture
+            if [[ "$filename" == *"arm64-v8a"* ]]; then
+              arch="arm64-v8a"
+            elif [[ "$filename" == *"armeabi-v7a"* ]]; then
+              arch="armeabi-v7a"
+            else
+              arch="universal"
+            fi
+            
+            # Extract version
+            version=$(echo "$filename" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            
+            if [ -n "$app_name" ] && [ -n "$version" ]; then
+              app_versions["$app_name $arch"]="$version"
+            fi
+          done
+          
+          # Display grouped apps
+          printf "| App | Architecture | Version |\n" >> release_notes.md
+          printf "|-----|-------------|---------|\n" >> release_notes.md
+          
+          for key in "${!app_versions[@]}"; do
+            app=$(echo "$key" | cut -d' ' -f1-2)
+            arch=$(echo "$key" | awk '{print $NF}')
+            version="${app_versions[$key]}"
+            printf "| $app | $arch | $version |\n" >> release_notes.md
           done
           
           echo "" >> release_notes.md
           echo "---" >> release_notes.md
           echo "" >> release_notes.md
           echo "## ⚙️ Build Information" >> release_notes.md
-          echo "- Includes architecture-specific builds for some apps" >> release_notes.md
           echo "- Auto-built every 6 hours" >> release_notes.md
+          echo "- Multiple architecture support" >> release_notes.md
+          echo "- Latest ReVanced patches" >> release_notes.md
           echo "" >> release_notes.md
-          echo "## 🏗️ Supported Architectures" >> release_notes.md
-          echo "- arm64-v8a (64-bit ARM)" >> release_notes.md
-          echo "- armeabi-v7a (32-bit ARM)" >> release_notes.md
-          echo "- universal (for most apps)" >> release_notes.md
+          echo "## 📊 Architecture Guide" >> release_notes.md
+          echo "- **arm64-v8a**: Modern ARM devices (2014+)" >> release_notes.md
+          echo "- **armeabi-v7a**: Older ARM devices" >> release_notes.md
+          echo "- **universal**: All ARM devices (larger file)" >> release_notes.md
+          echo "" >> release_notes.md
+          echo "## ⚠️ Disclaimer" >> release_notes.md
+          echo "These APKs are built automatically. Use at your own risk." >> release_notes.md
       
       - name: Create New Release
         if: steps.check-apks.outputs.skip_release == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          current_date=$(date +%Y%m%d-%H%M)
+          echo "🚀 Creating new release with $apk_count APK(s)..."
+          
           gh release create "latest" \
             --title "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')" \
             --notes-file release_notes.md \
             ./release-apks/*.apk \
             --latest
-          echo "Release created successfully!"
-      
-      - name: Display Release URL
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          release_url=$(gh release view latest --json url --jq .url)
-          echo "Release URL: $release_url"
+          
+          echo "✅ Release created successfully!"
 
   cleanup:
     name: Cleanup Workflow Runs
