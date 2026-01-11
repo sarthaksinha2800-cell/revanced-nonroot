@@ -149,6 +149,7 @@ jobs:
       - name: Check if Any APKs Were Built
         id: check-apks
         run: |
+          # Count APK files
           apk_count=$(find ./all-apks -name "*.apk" 2>/dev/null | wc -l)
           echo "Found $apk_count APK(s)"
           
@@ -160,71 +161,128 @@ jobs:
             echo "skip_release=false" >> $GITHUB_OUTPUT
           fi
       
+      - name: Delete Old Release
+        if: steps.check-apks.outputs.skip_release == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if "latest" release exists and delete it
+          echo "🔄 Checking for existing 'latest' release..."
+          if gh release view latest >/dev/null 2>&1; then
+            echo "🗑️ Deleting old 'latest' release..."
+            gh release delete latest --yes --cleanup-tag
+            echo "✅ Old release deleted"
+          else
+            echo "📭 No existing 'latest' release found"
+          fi
+      
       - name: Collect All APKs
         if: steps.check-apks.outputs.skip_release == 'false'
         run: |
           mkdir -p ./release-apks
+          
+          # Copy all APKs to release folder
+          echo "📦 Collecting APKs..."
           find ./all-apks -name "*.apk" -exec cp {} ./release-apks/ \;
           
-          echo "📦 APKs ready for release:"
+          echo "📁 APKs ready for release:"
           ls -la ./release-apks/
+          
+          # Count again for display
+          final_count=$(ls -1 ./release-apks/*.apk 2>/dev/null | wc -l || echo "0")
+          echo "📊 Total APKs: $final_count"
       
-      - name: Generate Release Notes with Architecture Info
+      - name: Generate Release Notes
         if: steps.check-apks.outputs.skip_release == 'false'
         run: |
-          echo "# ReVanced APKs - Auto Built" > release_notes.md
-          echo "" >> release_notes.md
-          echo "## 📱 Available Apps" >> release_notes.md
-          echo "" >> release_notes.md
+          echo "📝 Generating release notes..."
           
-          # Create a table with app, architecture, and version
-          echo "| App | Architecture | Version |" >> release_notes.md
-          echo "|-----|-------------|---------|" >> release_notes.md
+          cat > release_notes.md << 'EOF'
+          # ReVanced APKs - Auto Built
+          
+          ## 📱 Available Apps
+          
+          EOF
+          
+          # Group apps by name (remove architecture suffix for grouping)
+          declare -A app_info
           
           for apk in ./release-apks/*.apk; do
-            filename=$(basename "$apk")
-            
-            # Extract architecture
-            if [[ "$filename" == *"arm64-v8a"* ]]; then
-              arch="arm64-v8a"
-              app_name=$(echo "$filename" | sed "s/-arm64-v8a-.*//")
-            elif [[ "$filename" == *"armeabi-v7a"* ]]; then
-              arch="armeabi-v7a"
-              app_name=$(echo "$filename" | sed "s/-armeabi-v7a-.*//")
-            else
-              arch="universal"
-              app_name=$(echo "$filename" | sed "s/-revanced-.*//" | sed "s/-cli-.*//")
+            if [ -f "$apk" ]; then
+              filename=$(basename "$apk")
+              
+              # Extract app name (remove architecture and version info)
+              app_name=$(echo "$filename" | sed -E 's/-(arm64-v8a|armeabi-v7a|universal|patch|revanced|cli)-.*//' | sed 's/-/ /g')
+              
+              # Extract architecture
+              if [[ "$filename" == *"arm64-v8a"* ]]; then
+                arch="arm64-v8a"
+              elif [[ "$filename" == *"armeabi-v7a"* ]]; then
+                arch="armeabi-v7a"
+              else
+                arch="universal"
+              fi
+              
+              # Extract version
+              version=$(echo "$filename" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)*' | head -1 || echo "unknown")
+              
+              # Store in associative array
+              key="$app_name"
+              if [ -z "${app_info[$key]}" ]; then
+                app_info[$key]=""
+              fi
+              app_info[$key]="${app_info[$key]}<br>• $arch: $version"
             fi
-            
-            # Extract version
-            version=$(echo "$filename" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)*' | head -1)
-            
-            echo "| $app_name | $arch | $version |" >> release_notes.md
           done
           
-          echo "" >> release_notes.md
-          echo "---" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "## ⚙️ Build Information" >> release_notes.md
-          echo "- Auto-built every 6 hours" >> release_notes.md
-          echo "- Multiple architecture support" >> release_notes.md
-          echo "- Latest ReVanced patches" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "## 📊 Architecture Guide" >> release_notes.md
-          echo "- **arm64-v8a**: Modern ARM devices (2014+)" >> release_notes.md
-          echo "- **armeabi-v7a**: Older ARM devices" >> release_notes.md
-          echo "- **universal**: All ARM devices (larger file)" >> release_notes.md
-          echo "" >> release_notes.md
-          echo "## ⚠️ Disclaimer" >> release_notes.md
-          echo "These APKs are built automatically. Use at your own risk." >> release_notes.md
+          # Create a simple markdown list
+          for app in "${!app_info[@]}"; do
+            echo "### $app" >> release_notes.md
+            echo "${app_info[$app]:4}" | sed 's/<br>/\n/g' >> release_notes.md
+            echo "" >> release_notes.md
+          done
+          
+          cat >> release_notes.md << 'EOF'
+          ---
+          
+          ## ⚙️ Build Information
+          - **Auto-built every 6 hours**
+          - **Multiple architecture support** (arm64-v8a, armeabi-v7a, universal)
+          - **Latest ReVanced patches**
+          - **Updated automatically**
+          
+          ## 📊 Architecture Guide
+          - **arm64-v8a**: Modern ARM devices (2014+)
+          - **armeabi-v7a**: Older ARM devices
+          - **universal**: All ARM devices (larger file)
+          
+          ## ⚠️ Disclaimer
+          These APKs are built automatically. Use at your own risk.
+          
+          ## 🔄 Update Schedule
+          - Automatic updates every 6 hours
+          - Manual updates available via workflow dispatch
+          - Always replaces the previous release
+          EOF
       
       - name: Create New Release
         if: steps.check-apks.outputs.skip_release == 'false'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "🚀 Creating new release with $apk_count APK(s)..."
+          echo "🚀 Creating new release with APKs..."
           
+          # Count APKs
+          apk_count=$(ls -1 ./release-apks/*.apk 2>/dev/null | wc -l || echo "0")
+          
+          if [ $apk_count -eq 0 ]; then
+            echo "❌ No APKs found to release"
+            exit 1
+          fi
+          
+          echo "📦 Releasing $apk_count APK(s)..."
+          
+          # Create the release
           gh release create "latest" \
             --title "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')" \
             --notes-file release_notes.md \
@@ -232,6 +290,20 @@ jobs:
             --latest
           
           echo "✅ Release created successfully!"
+      
+      - name: Display Release URL
+        if: steps.check-apks.outputs.skip_release == 'false'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          release_url=$(gh release view latest --json url --jq .url)
+          echo "🔗 Release URL: $release_url"
+          echo ""
+          echo "📦 Direct Download Links:"
+          for apk in ./release-apks/*.apk; do
+            filename=$(basename "$apk")
+            echo "- $filename: $release_url/download/$filename"
+          done
 
   cleanup:
     name: Cleanup Workflow Runs
