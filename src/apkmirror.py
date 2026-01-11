@@ -4,8 +4,9 @@ import logging
 from bs4 import BeautifulSoup
 from src import base_url, session
 
-def get_download_link(version: str, app_name: str, config: dict) -> str: 
-    criteria = [config['type'], config['arch'], config['dpi']]
+def get_download_link(version: str, app_name: str, config: dict, arch: str = None) -> str:
+    target_arch = arch if arch else config.get('arch', 'universal')
+    criteria = [config['type'], target_arch, config['dpi']]
     
     # --- UNIVERSAL URL FINDER WITH VALIDATION ---
     version_parts = version.split('.')
