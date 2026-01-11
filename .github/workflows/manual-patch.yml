@@ -135,7 +135,7 @@ jobs:
             echo "apk_count=0" >> $GITHUB_OUTPUT
           fi
       
-      - name: Update or Create Release
+      - name: Update Release
         if: ${{ inputs.replace_in_release == true }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -145,83 +145,45 @@ jobs:
           # Create working directory
           mkdir -p release-update
           
-          # Copy existing APKs if release exists
-          if [ "${{ steps.check-release.outputs.release_exists }}" = "true" ] && [ -d "existing-release" ]; then
-            echo "📦 Copying existing APKs..."
-            find existing-release -name "*.apk" -exec cp {} release-update/ \;
-            
-            # Remove old version(s) of this app for the same architecture
-            app_pattern="${{ inputs.app_name }}-${{ inputs.architecture }}-*"
-            echo "Removing old version(s) matching: $app_pattern"
-            find release-update -name "$app_pattern" -delete
-          fi
-          
           # Copy new APK(s)
           cp *.apk release-update/
           
-          echo "📁 Final APKs in release-update:"
+          # Delete old release if exists
+          if gh release view latest >/dev/null 2>&1; then
+            echo "🗑️ Deleting old 'latest' release..."
+            gh release delete latest --yes --cleanup-tag
+          fi
+          
+          echo "📁 APKs to release:"
           ls -la release-update/
           
-          # Generate release notes with architecture info
+          # Create simple release notes
           cat > release_notes.md << EOF
           # ReVanced APKs - Manual Update
           
           ## 📱 Available Apps
-          
           EOF
-          
-          # List all APKs in a table
-          echo "| App | Architecture | Version |" >> release_notes.md
-          echo "|-----|-------------|---------|" >> release_notes.md
           
           for apk in release-update/*.apk; do
             filename=$(basename "$apk")
-            # Extract app name, architecture and version
-            if [[ "$filename" == *"arm64-v8a"* ]]; then
-              arch="arm64-v8a"
-              clean_name=$(echo "$filename" | sed "s/-arm64-v8a-.*//")
-            elif [[ "$filename" == *"armeabi-v7a"* ]]; then
-              arch="armeabi-v7a"
-              clean_name=$(echo "$filename" | sed "s/-armeabi-v7a-.*//")
-            else
-              arch="universal"
-              clean_name=$(echo "$filename" | sed "s/-revanced-.*//" | sed "s/-cli-.*//")
-            fi
-            
-            # Extract version
-            version=$(echo "$filename" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)*' | head -1)
-            
-            echo "| $clean_name | $arch | $version |" >> release_notes.md
+            echo "- $filename" >> release_notes.md
           done
           
           cat >> release_notes.md << EOF
           
           ---
           
-          ## ⚙️ Build Information
-          - **Manually updated:** ${{ inputs.app_name }} (${{ inputs.source }})
-          - **Architecture:** ${{ inputs.architecture }}
-          - **Update time:** $(date)
-          - **Total APKs:** $(ls -1 release-update/*.apk 2>/dev/null | wc -l)
+          **Manually updated at:** $(date)
+          **App:** ${{ inputs.app_name }}
+          **Architecture:** ${{ inputs.architecture }}
+          **Source:** ${{ inputs.source }}
           
-          ## 📊 Architecture Guide
-          - **arm64-v8a**: Modern ARM devices (2014+)
-          - **armeabi-v7a**: Older ARM devices  
-          - **universal**: All ARM devices (larger file)
-          
-          ## ⚠️ Disclaimer
-          These APKs are built automatically. Use at your own risk.
+          Auto-updates every 6 hours.
           EOF
-          
-          # Delete old release if exists
-          if [ "${{ steps.check-release.outputs.release_exists }}" = "true" ]; then
-            echo "🗑️ Deleting old release..."
-            gh release delete latest --yes --cleanup-tag || true
-          fi
           
           # Create new release
           echo "🚀 Creating updated release..."
-          gh release create latest \
+          gh release create "latest" \
             --title "ReVanced APKs - $(date +'%Y-%m-%d %H:%M')" \
             --notes-file release_notes.md \
             ./release-update/*.apk \
