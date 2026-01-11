@@ -11,6 +11,64 @@ from src import (
     downloader
 )
 
+# Add this after imports in __main__.py
+def get_app_architectures(app_name: str) -> list:
+    """
+    Returns list of architectures to build for a given app.
+    Only some apps need multiple architectures.
+    """
+    # Define which apps need which architectures
+    arch_config = {
+        "youtube": ["arm64-v8a", "armeabi-v7a"],
+        "youtube-music": ["arm64-v8a", "armeabi-v7a"],
+        "google-photos": ["arm64-v8a", "armeabi-v7a"],
+        # Add more apps here as needed
+        # For apps not listed, defaults to ["universal"]
+    }
+    
+    return arch_config.get(app_name, ["universal"])
+
+# Modify run_build function to handle multiple architectures
+def run_build(app_name: str, source: str) -> list:
+    architectures = get_app_architectures(app_name)
+    built_apks = []
+    
+    download_files, name = downloader.download_required(source)
+    revanced_cli = utils.find_file(download_files, 'revanced-cli', '.jar')
+    revanced_patches = utils.find_file(download_files, 'patches', '.rvp')
+    
+    for arch in architectures:
+        logging.info(f"Building {app_name} for architecture: {arch}")
+        
+        # Build for this specific architecture
+        apk_path = build_for_architecture(app_name, source, arch, 
+                                         download_files, revanced_cli, revanced_patches)
+        if apk_path:
+            built_apks.append(apk_path)
+    
+    return built_apks
+
+# New function to handle building for a single architecture
+def build_for_architecture(app_name: str, source: str, arch: str,
+                          download_files: list, revanced_cli: Path, revanced_patches: Path) -> str:
+    # Keep existing logic but with architecture-specific modifications
+    download_methods = [
+        downloader.download_apkmirror,
+        downloader.download_apkpure,
+        downloader.download_uptodown
+    ]
+    
+    input_apk = None
+    version = None
+    for method in download_methods:
+        input_apk, version = method(app_name, revanced_cli, revanced_patches, arch)
+        if input_apk:
+            break
+    
+    if input_apk is None:
+        logging.warning(f"❌ Failed to download {app_name} for architecture {arch}")
+        return None
+
 def run_build(app_name: str, source: str) -> str:
     download_files, name = downloader.download_required(source)
 
