@@ -11,65 +11,8 @@ from src import (
     downloader
 )
 
-# Add this after imports in __main__.py
-def get_app_architectures(app_name: str) -> list:
-    """
-    Returns list of architectures to build for a given app.
-    Only some apps need multiple architectures.
-    """
-    # Define which apps need which architectures
-    arch_config = {
-        "youtube": ["arm64-v8a", "armeabi-v7a"],
-        "youtube-music": ["arm64-v8a", "armeabi-v7a"],
-        "google-photos": ["arm64-v8a", "armeabi-v7a"],
-        # Add more apps here as needed
-        # For apps not listed, defaults to ["universal"]
-    }
-    
-    return arch_config.get(app_name, ["universal"])
-
-# Modify run_build function to handle multiple architectures
-def run_build(app_name: str, source: str) -> list:
-    architectures = get_app_architectures(app_name)
-    built_apks = []
-    
-    download_files, name = downloader.download_required(source)
-    revanced_cli = utils.find_file(download_files, 'revanced-cli', '.jar')
-    revanced_patches = utils.find_file(download_files, 'patches', '.rvp')
-    
-    for arch in architectures:
-        logging.info(f"Building {app_name} for architecture: {arch}")
-        
-        # Build for this specific architecture
-        apk_path = build_for_architecture(app_name, source, arch, 
-                                         download_files, revanced_cli, revanced_patches)
-        if apk_path:
-            built_apks.append(apk_path)
-    
-    return built_apks
-
-# New function to handle building for a single architecture
-def build_for_architecture(app_name: str, source: str, arch: str,
-                          download_files: list, revanced_cli: Path, revanced_patches: Path) -> str:
-    # Keep existing logic but with architecture-specific modifications
-    download_methods = [
-        downloader.download_apkmirror,
-        downloader.download_apkpure,
-        downloader.download_uptodown
-    ]
-    
-    input_apk = None
-    version = None
-    for method in download_methods:
-        input_apk, version = method(app_name, revanced_cli, revanced_patches, arch)
-        if input_apk:
-            break
-    
-    if input_apk is None:
-        logging.warning(f"❌ Failed to download {app_name} for architecture {arch}")
-        return None
-
-def run_build(app_name: str, source: str) -> str:
+def run_build(app_name: str, source: str, arch: str = "universal") -> str:
+    """Build APK for specific architecture"""
     download_files, name = downloader.download_required(source)
 
     revanced_cli = utils.find_file(download_files, 'revanced-cli', '.jar')
@@ -93,7 +36,6 @@ def run_build(app_name: str, source: str) -> str:
         logging.error("All download sources failed. Skipping this app.")
         return None
 
-
     if input_apk.suffix != ".apk":
         logging.warning("Input file is not .apk, using APKEditor to merge")
         apk_editor = downloader.download_apkeditor()
@@ -115,6 +57,30 @@ def run_build(app_name: str, source: str) -> str:
         input_apk = merged_apk
         logging.info(f"Merged APK file generated: {input_apk}")
 
+    # ARCHITECTURE-SPECIFIC PROCESSING
+    if arch != "universal":
+        logging.info(f"Processing APK for {arch} architecture...")
+        
+        # Remove unwanted architectures based on selected arch
+        if arch == "arm64-v8a":
+            # Remove x86, x86_64, and armeabi-v7a
+            utils.run_process([
+                "zip", "--delete", str(input_apk), 
+                "lib/x86/*", "lib/x86_64/*", "lib/armeabi-v7a/*"
+            ], silent=True, check=False)
+        elif arch == "armeabi-v7a":
+            # Remove x86, x86_64, and arm64-v8a
+            utils.run_process([
+                "zip", "--delete", str(input_apk),
+                "lib/x86/*", "lib/x86_64/*", "lib/arm64-v8a/*"
+            ], silent=True, check=False)
+    else:
+        # Universal: only remove x86 architectures
+        utils.run_process([
+            "zip", "--delete", str(input_apk), 
+            "lib/x86/*", "lib/x86_64/*"
+        ], silent=True, check=False)
+
     exclude_patches = []
     include_patches = []
 
@@ -128,28 +94,23 @@ def run_build(app_name: str, source: str) -> str:
                 elif line.startswith('+'):
                     include_patches.extend(["-e", line[1:].strip()])
 
-    utils.run_process([
-        "zip", "--delete", str(input_apk), "lib/x86/*", "lib/x86_64/*"
-    ], silent=True, check=False)
-
     # FIX: Repair corrupted APK from Uptodown
     logging.info("Checking APK for corruption...")
     try:
-        # Try to fix the APK if it's corrupted
         fixed_apk = Path(f"{app_name}-fixed-v{version}.apk")
         subprocess.run([
             "zip", "-FF", str(input_apk), "--out", str(fixed_apk)
         ], check=False, capture_output=True)
         
         if fixed_apk.exists() and fixed_apk.stat().st_size > 0:
-            # Replace corrupted APK with fixed one
             input_apk.unlink(missing_ok=True)
             fixed_apk.rename(input_apk)
             logging.info("APK fixed successfully")
     except Exception as e:
         logging.warning(f"Could not fix APK: {e}")
 
-    output_apk = Path(f"{app_name}-patch-v{version}.apk")
+    # Include architecture in output filename
+    output_apk = Path(f"{app_name}-{arch}-patch-v{version}.apk")
 
     utils.run_process([
         "java", "-jar", str(revanced_cli),
@@ -160,13 +121,13 @@ def run_build(app_name: str, source: str) -> str:
 
     input_apk.unlink(missing_ok=True)
 
-    signed_apk = Path(f"{app_name}-{name}-v{version}.apk")
+    # Include architecture in final signed APK name
+    signed_apk = Path(f"{app_name}-{arch}-{name}-v{version}.apk")
 
     apksigner = utils.find_apksigner()
     if not apksigner:
         exit(1)
 
-    # Try to sign, if fails, try alternative method
     try:
         utils.run_process([
             str(apksigner), "sign", "--verbose",
@@ -180,10 +141,9 @@ def run_build(app_name: str, source: str) -> str:
         logging.warning(f"Standard signing failed: {e}")
         logging.info("Trying alternative signing method...")
         
-        # Try with min-sdk-version flag
         utils.run_process([
             str(apksigner), "sign", "--verbose",
-            "--min-sdk-version", "21",  # Add this flag
+            "--min-sdk-version", "21",
             "--ks", "keystore/public.jks",
             "--ks-pass", "pass:public",
             "--key-pass", "pass:public",
@@ -192,14 +152,11 @@ def run_build(app_name: str, source: str) -> str:
         ], stream=True)
 
     output_apk.unlink(missing_ok=True)
-    # release.create_github_release(name, revanced_patches, revanced_cli, signed_apk)
-    #r2.upload(str(signed_apk), f"{app_name}/{signed_apk.name}")
     print(f"✅ APK built: {signed_apk.name}")
     
-    # Keep the file as-is (it already has version in the name)
     return str(signed_apk)
 
-if __name__ == "__main__":
+def main():
     app_name = getenv("APP_NAME")
     source = getenv("SOURCE")
 
@@ -207,6 +164,39 @@ if __name__ == "__main__":
         logging.error("APP_NAME and SOURCE environment variables must be set")
         exit(1)
 
-    apk_path = run_build(app_name, source)
-    if apk_path:
-        print(f"🎯 Final APK path: {apk_path}")
+    # Read arch-config.json
+    arch_config_path = Path("arch-config.json")
+    if arch_config_path.exists():
+        with open(arch_config_path) as f:
+            arch_config = json.load(f)
+        
+        # Find arches for this app
+        arches = ["universal"]  # default
+        for config in arch_config:
+            if config["app_name"] == app_name and config["source"] == source:
+                arches = config["arches"]
+                break
+        
+        # Build for each architecture
+        built_apks = []
+        for arch in arches:
+            logging.info(f"🔨 Building {app_name} for {arch} architecture...")
+            apk_path = run_build(app_name, source, arch)
+            if apk_path:
+                built_apks.append(apk_path)
+                print(f"✅ Built {arch} version: {Path(apk_path).name}")
+        
+        # Summary
+        print(f"\n🎯 Built {len(built_apks)} APK(s) for {app_name}:")
+        for apk in built_apks:
+            print(f"  📱 {Path(apk).name}")
+        
+    else:
+        # Fallback to single universal build
+        logging.warning("arch-config.json not found, building universal only")
+        apk_path = run_build(app_name, source, "universal")
+        if apk_path:
+            print(f"🎯 Final APK path: {apk_path}")
+
+if __name__ == "__main__":
+    main()
