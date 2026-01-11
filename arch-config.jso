@@ -1,7 +1,0 @@
-[
-  {
-    "app_name": "youtube-music",
-    "source": "apkmirror",
-    "arches": ["arm64-v8a", "armeabi-v7a"]
-  }
-]
