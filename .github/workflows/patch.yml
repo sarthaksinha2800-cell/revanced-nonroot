@@ -177,39 +177,29 @@ jobs:
           echo "## 📱 Available Apps" >> release_notes.md
           echo "" >> release_notes.md
           
-          # Group by app
-          declare -A app_versions
+          # Create a table with app, architecture, and version
+          echo "| App | Architecture | Version |" >> release_notes.md
+          echo "|-----|-------------|---------|" >> release_notes.md
+          
           for apk in ./release-apks/*.apk; do
             filename=$(basename "$apk")
-            # Extract app name (remove arch and version)
-            app_name=$(echo "$filename" | sed -E 's/-(arm64-v8a|armeabi-v7a|universal|patch|revanced|cli).*//' | sed 's/-/ /g')
             
             # Extract architecture
             if [[ "$filename" == *"arm64-v8a"* ]]; then
               arch="arm64-v8a"
+              app_name=$(echo "$filename" | sed "s/-arm64-v8a-.*//")
             elif [[ "$filename" == *"armeabi-v7a"* ]]; then
               arch="armeabi-v7a"
+              app_name=$(echo "$filename" | sed "s/-armeabi-v7a-.*//")
             else
               arch="universal"
+              app_name=$(echo "$filename" | sed "s/-revanced-.*//" | sed "s/-cli-.*//")
             fi
             
             # Extract version
-            version=$(echo "$filename" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            version=$(echo "$filename" | grep -oE 'v[0-9]+\.[0-9]+(\.[0-9]+)*' | head -1)
             
-            if [ -n "$app_name" ] && [ -n "$version" ]; then
-              app_versions["$app_name $arch"]="$version"
-            fi
-          done
-          
-          # Display grouped apps
-          printf "| App | Architecture | Version |\n" >> release_notes.md
-          printf "|-----|-------------|---------|\n" >> release_notes.md
-          
-          for key in "${!app_versions[@]}"; do
-            app=$(echo "$key" | cut -d' ' -f1-2)
-            arch=$(echo "$key" | awk '{print $NF}')
-            version="${app_versions[$key]}"
-            printf "| $app | $arch | $version |\n" >> release_notes.md
+            echo "| $app_name | $arch | $version |" >> release_notes.md
           done
           
           echo "" >> release_notes.md
