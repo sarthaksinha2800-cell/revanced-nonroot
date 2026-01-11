@@ -214,6 +214,15 @@ def get_download_link(version: str, app_name: str, config: dict) -> str:
             return base_url + button['href']
 
     return None
+
+def get_architecture_criteria(arch: str) -> dict:
+    """Map architecture names to APKMirror criteria"""
+    arch_mapping = {
+        "arm64-v8a": "arm64-v8a",
+        "armeabi-v7a": "armeabi-v7a", 
+        "universal": "universal"
+    }
+    return arch_mapping.get(arch, "universal")
     
 def get_latest_version(app_name: str, config: dict) -> str:
     # First try: get from main app page
