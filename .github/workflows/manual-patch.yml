@@ -178,7 +178,7 @@ jobs:
           **Architecture:** ${{ inputs.architecture }}
           **Source:** ${{ inputs.source }}
           
-          Auto-updates every 6 hours.
+          Auto-updates daily at 6 AM UTC.
           EOF
           
           # Create new release
