@@ -1,4 +1,4 @@
-mport re
+import re
 import json
 import logging
 from bs4 import BeautifulSoup
