@@ -3,7 +3,7 @@ name: Auto Build and Release ReVanced
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 6 * * *'  # Daily at 6 AM UTC
 
 jobs:
   download-tools:
@@ -246,7 +246,7 @@ jobs:
           ---
           
           ## ⚙️ Build Information
-          - **Auto-built every 6 hours**
+          - **Auto-built daily at 6 AM UTC**
           - **Multiple architecture support** (arm64-v8a, armeabi-v7a, universal)
           - **Latest ReVanced patches**
           - **Updated automatically**
@@ -260,7 +260,7 @@ jobs:
           These APKs are built automatically. Use at your own risk.
           
           ## 🔄 Update Schedule
-          - Automatic updates every 6 hours
+          - Automatic updates daily at 6 AM UTC
           - Manual updates available via workflow dispatch
           - Always replaces the previous release
           EOF
